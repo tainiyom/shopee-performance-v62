@@ -695,8 +695,10 @@ details.ovtable summary{cursor:pointer;font-weight:600;font-size:.9rem}
         <span class="hint" id="modeHint">ค่าใช้จ่ายโฆษณาใช้ร่วมกันทั้ง 2 แบบ</span>
       </div>
       <div class="pastebar">
-        <button type="button" class="btn sm" id="pasteBtn">📋 วางข้อมูลจาก Seller Centre</button>
-        <span class="hint">คัดลอกตัวเลขจากหน้า Seller Centre หรือตาราง Shopee Ads แล้ววาง ระบบแยกลงช่องให้ ตรวจก่อนกดเติม</span>
+        <button type="button" class="btn sm primary" id="xlsBtn">📊 นำเข้า Excel จาก Seller Centre</button>
+        <input type="file" id="xlsFile" class="vh" tabindex="-1" aria-hidden="true" multiple accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <button type="button" class="btn sm" id="pasteBtn">📋 วางข้อความ</button>
+        <span class="hint">ไฟล์ shop-stats (ข้อมูลธุรกิจ → ดาวน์โหลด) ระบบอ่านช่วงวันที่ แล้วเติมยอดขาย ที่มาการเข้าชม Shopee Ads และ TOP 5 สินค้า ให้ทั้งชุดยืนยันแล้วและชำระแล้ว · เลือกหลายไฟล์ = บันทึกหลายวันทีเดียว</span>
       </div>
       <div class="salesbox">
         <label for="sales" id="salesLbl">ยอดขายที่ยืนยันแล้ว (ทั้งร้าน)</label>
@@ -1527,6 +1529,183 @@ $('pasteGo').addEventListener('click', pasteApply);
 $('pasteCancel').addEventListener('click', ()=>$('pasteModal').hidden=true);
 $('pasteModal').addEventListener('click', e=>{ if(e.target===$('pasteModal')) $('pasteModal').hidden=true; });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape' && !$('pasteModal').hidden) $('pasteModal').hidden=true; });
+
+// ---------- import the shop-stats Excel file downloaded from Seller Centre ----------
+// reads tab "ที่มาของการเข้าชม (ยืนยันแล้ว)" (+ "(ชำระเงินแล้ว)"): total sales, sales by traffic source, Shopee Ads sales and ad spend per channel
+const XLS_TR = {pdp:'ยอดขายจากหน้ารายละเอียดสินค้า', live:'ยอดขายจาก Live ของร้านค้า', video:'ยอดขายจากวิดีโอของร้านค้า', partner:'ยอดขายจากพาร์ทเนอร์'};
+// small built-in .xlsx reader (zip + XML) — no external library, works offline
+async function xlsxOpen(buf){
+  const dv=new DataView(buf), u8=new Uint8Array(buf), td=new TextDecoder();
+  let eo=-1; for(let i=buf.byteLength-22; i>=Math.max(0,buf.byteLength-65557); i--) if(dv.getUint32(i,true)===0x06054b50){ eo=i; break; }
+  if(eo<0) throw new Error('nozip');
+  const files={}; let p=dv.getUint32(eo+16,true);
+  for(let k=0, n=dv.getUint16(eo+10,true); k<n && dv.getUint32(p,true)===0x02014b50; k++){
+    const nl=dv.getUint16(p+28,true), xl=dv.getUint16(p+30,true), cl=dv.getUint16(p+32,true);
+    files[td.decode(u8.subarray(p+46,p+46+nl))]={method:dv.getUint16(p+10,true), csize:dv.getUint32(p+20,true), lho:dv.getUint32(p+42,true)};
+    p+=46+nl+xl+cl;
+  }
+  const get=async name=>{ const f=files[name]; if(!f) return null;
+    const st=f.lho+30+dv.getUint16(f.lho+26,true)+dv.getUint16(f.lho+28,true), data=u8.subarray(st, st+f.csize);
+    if(f.method===0) return td.decode(data);
+    if(typeof DecompressionStream==='undefined') throw new Error('oldbrowser');
+    return await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text(); };
+  const DP=new DOMParser(), X=t=>DP.parseFromString(t,'application/xml'), tags=(d,n)=>[...d.getElementsByTagName(n)];
+  const wb=await get('xl/workbook.xml'); if(!wb) throw new Error('nozip');
+  const rel={}; const rt=await get('xl/_rels/workbook.xml.rels'); if(rt) for(const r of tags(X(rt),'Relationship')) rel[r.getAttribute('Id')]=r.getAttribute('Target');
+  const sst=await get('xl/sharedStrings.xml'); const ss=sst ? tags(X(sst),'si').map(si=>tags(si,'t').map(t=>t.textContent).join('')) : [];
+  const sheets=tags(X(wb),'sheet').map(sh=>{ const id=sh.getAttribute('r:id')||sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');
+    const t=rel[id]||''; return {name:sh.getAttribute('name')||'', path: t.startsWith('/') ? t.slice(1) : 'xl/'+t.replace(/^\.\//,'')}; });
+  const colIdx=ref=>{ const m=String(ref).match(/^[A-Z]+/); if(!m) return -1; let n=0; for(const ch of m[0]) n=n*26+ch.charCodeAt(0)-64; return n-1; };
+  return {names:sheets.map(x=>x.name), rows:async name=>{
+    const sh=sheets.find(x=>x.name===name), txt=sh && await get(sh.path); if(!txt) return null;
+    const out=[];
+    for(const row of tags(X(txt),'row')){ const ri=(+row.getAttribute('r')||out.length+1)-1, arr=out[ri]||(out[ri]=[]);
+      for(const c of tags(row,'c')){ const t=c.getAttribute('t'); let v;
+        if(t==='inlineStr') v=tags(c,'t').map(x=>x.textContent).join('');
+        else { const ve=c.getElementsByTagName('v')[0]; v=ve?ve.textContent:''; if(t==='s') v=ss[+v]??''; }
+        const ci=colIdx(c.getAttribute('r')||''); arr[ci>=0?ci:arr.length]=String(v).trim(); } }
+    return Array.from(out, r=>Array.from(r||[], x=>x??''));
+  }};
+}
+async function xsRows(book, prefix){
+  const n=book.names.find(x=>x.replace(/\s+/g,' ').trim().startsWith(prefix)); return n ? await book.rows(n) : null;
+}
+const xsNorm = t => String(t||'').replace(/\s+/g,'').toLowerCase();
+function xsChKey(name){
+  const n=xsNorm(name);
+  const ex=CH.find(c=>c.g==='shopee' && (xsNorm(c.n)===n || (c.old && xsNorm(c.old)===n))); if(ex) return ex.k;
+  const re=PASTE_CH.find(([k,r])=>CH.find(c=>c.k===k).g==='shopee' && r.test(name)); if(re) return re[0];
+  return 'otherAds';
+}
+function xsParse(rows){
+  const hi=rows.findIndex(r=>r[0]==='วันที่'); if(hi<0) return null;
+  const H=rows[hi], V=rows[hi+1]||[]; const val=n=>{ const i=H.indexOf(n); return i>=0 ? pNum(V[i]) : 0; };
+  const ds=(String(V[0]||'').match(/\d{1,2}[-\/.]\d{1,2}[-\/.]\d{4}/g)||[]).map(pDate).filter(Boolean);
+  const out={d1:ds[0]||'', d2:ds[1]||ds[0]||'', sales:val('ยอดขาย (THB)'), adsSales:val('ยอดขายจากโฆษณา Shopee Ads'),
+    traffic:Object.fromEntries(TR.map(t=>[t.k, val(XLS_TR[t.k])])), ch:{}, other:[]};
+  const ai=rows.findIndex((r,i)=>i>hi && r[0]==='โฆษณา Shopee Ads');
+  if(ai>=0){
+    const AH=rows[ai+1]||[], cs=AH.indexOf('ยอดขาย (THB)'), cp=AH.findIndex(x=>/ค่าโฆษณา/.test(x) && !/roas/i.test(x));
+    for(let i=ai+2; i<rows.length && rows[i][0]; i++){
+      const nm=rows[i][0], k=xsChKey(nm), sp=cp>=0?pNum(rows[i][cp]):0, sl=cs>=0?pNum(rows[i][cs]):0;
+      if(k==='otherAds' && !/^อื่น/.test(nm) && (sp||sl)) out.other.push(nm);
+      const c=out.ch[k]||(out.ch[k]={spend:0, sales:0}); c.spend+=sp; c.sales+=sl;
+    }
+  }
+  return out;
+}
+async function xsReadFile(file){
+  const book=await xlsxOpen(await file.arrayBuffer());
+  const cr=await xsRows(book,'ที่มาของการเข้าชม (ยืนยัน'), pr=await xsRows(book,'ที่มาของการเข้าชม (ชำระ');
+  const C=cr && xsParse(cr), P=pr && xsParse(pr);
+  if(C){ C.products=xsProducts(await xsRows(book,'ส่วนแบ่งรายการสินค้า (ยืน')); if(P) P.products=xsProducts(await xsRows(book,'ส่วนแบ่งรายการสินค้า (ชำระ')); }
+  if(!C) throw new Error('nosheet');
+  if(!C.d1){ const m=file.name.match(/(\d{4})(\d{2})(\d{2})-(\d{4})(\d{2})(\d{2})/); if(m){ C.d1=`${m[1]}-${m[2]}-${m[3]}`; C.d2=`${m[4]}-${m[5]}-${m[6]}`; } }
+  if(!C.d1) throw new Error('nodate');
+  return {C, P, file:file.name};
+}
+// the saved round of this shop with the same dates (prefers the same period type)
+function xsFindRound(C){
+  const L=records.filter(x=>inShop(x) && (x.d1||x.d2)===C.d1 && (x.d2||x.d1)===C.d2);
+  return L.find(x=>ptypeOf(x)===guessType(C.d1,C.d2)) || L[0] || null;
+}
+// put the numbers from the file into a round; keeps CPAS, notes, TOP 5 and channels that are not in the file
+function xsMerge(base, X){
+  const r=normRec(structuredClone(base||{channels:{}})), {C,P}=X;
+  r.d1=C.d1; r.d2=C.d2; if(!base || !PT[base.ptype]) r.ptype=guessType(C.d1,C.d2);
+  r.sales=C.sales; r.traffic={...C.traffic}; r.adsSales=C.adsSales;
+  if(P){ r.paid=P.sales; r.trafficPaid={...P.traffic}; r.adsSalesPaid=P.adsSales; }
+  for(const k of new Set([...Object.keys(C.ch), ...(P?Object.keys(P.ch):[])])){
+    const x=r.channels[k]||{}, cc=C.ch[k], pc=P&&P.ch[k];
+    r.channels[k]={...x, spend: cc ? cc.spend : pc ? pc.spend : (+x.spend||0), sales: cc ? cc.sales : 0, salesPaid: P ? (pc ? pc.sales : 0) : (+x.salesPaid||0)};
+  }
+  if(C.products && C.products.size){ const t=xsTopLists(C.products, P&&P.products); r.top5=t.top5; r.top5u=t.top5u; X.top=t; }
+  return r;
+}
+// TOP 5 from tab "ส่วนแบ่งรายการสินค้า": the file lists products per source (product page, Live, video, partner);
+// add up sales and units of each product across the sources, then rank
+function xsProducts(rows){
+  const M=new Map(); if(!rows) return M;
+  for(let i=0;i<rows.length;i++){
+    if(rows[i][0]!=='รหัสสินค้า') continue;
+    const H=rows[i], ci=H.indexOf('ผลิตภัณฑ์'), cs=H.indexOf('ยอดขาย (THB)'), cu=H.indexOf('จำนวนสินค้าทั้งหมด');
+    for(let j=i+1; j<rows.length; j++){
+      const id=String(rows[j][0]||'').replace(/\D/g,''); if(!id) break;
+      const x=M.get(id)||{id, name:String(rows[j][ci]||'').replace(/\s+/g,' ').trim(), sales:0, units:0, src:0};
+      x.sales+=cs>=0?pNum(rows[j][cs]):0; x.units+=cu>=0?pNum(rows[j][cu]):0; x.src++; M.set(id,x);
+    }
+  }
+  return M;
+}
+const xsDec = u => { try{ return decodeURIComponent(u||''); }catch(e){ return String(u||''); } };
+const XS_ITEM = /i\.(\d+)\.(\d+)|product\/(\d+)\/(\d+)/;
+function xsUrls(){ const L=[...LIB.values()].map(p=>p.url); for(const r of shopRecords()) for(const k of ['top5','top5u']) for(const x of (r[k]||[])) if(x&&x.url) L.push(x.url); return L.filter(Boolean); }
+// shop id of this shop, learned from any product link entered before (used to build links for new products)
+function xsShopId(){ for(const u of xsUrls()){ const m=xsDec(u).match(XS_ITEM); if(m) return m[1]||m[3]; } return ''; }
+function xsLibByItem(id){ for(const p of LIB.values()){ const m=xsDec(p.url).match(XS_ITEM); if(m && (m[2]||m[4])===id) return p; } return null; }
+function xsTopLists(C, P){
+  const sid=xsShopId();
+  const info=x=>{ const L=xsLibByItem(x.id); return {url:(L&&L.url)||(sid?`https://shopee.co.th/product/${sid}/${x.id}`:''), name:(L&&L.name)||x.name, img:(L&&L.img)||''}; };
+  const top=(f,g)=>[...C.values()].filter(x=>x[f]>0).sort((a,b)=>(b[f]-a[f])||(b[g]-a[g])).slice(0,5);
+  const pv=(id,f)=>P ? ((P.get(id)||{})[f]||0) : 0;
+  return {
+    top5: top('sales','units').map(x=>({...info(x), sales:x.sales, salesPaid:pv(x.id,'sales')})),
+    top5u: top('units','sales').map(x=>({...info(x), units:x.units, unitsPaid:pv(x.id,'units')})),
+    linked: !!sid
+  };
+}
+const xsDates = C => C.d1===C.d2 ? ddmm(C.d1)+'/'+C.d1.slice(0,4) : `${ddmm(C.d1)}–${ddmm(C.d2)}/${C.d2.slice(0,4)}`;
+function xsErr(e, name){ return e && e.message==='nosheet' ? `${name}: ไม่พบแท็บ “ที่มาของการเข้าชม (ยืนยันแล้ว)” ใช้ไฟล์ shop-stats จาก Seller Centre`
+  : e && e.message==='nodate' ? `${name}: อ่านช่วงวันที่ไม่ได้`
+  : e && e.message==='oldbrowser' ? 'เบราว์เซอร์นี้เก่าเกินไป อัปเดต Chrome / Safari / Edge แล้วลองใหม่'
+  : `${name}: เปิดไฟล์ไม่ได้ ใช้ไฟล์ .xlsx ที่ดาวน์โหลดจาก Seller Centre`; }
+async function xsImportOne(file){
+  let X; try{ X=await xsReadFile(file); }catch(e){ toast(xsErr(e, file.name)); return; }
+  const ex=xsFindRound(X.C), f=readForm();
+  const busy=(f.sales || calc(f).spend) && !(ex && editingId===ex.id);
+  if(busy && !confirm(`ตัวเลขที่กรอกค้างไว้ในฟอร์มจะถูกแทนที่ด้วยข้อมูลวันที่ ${xsDates(X.C)} จากไฟล์ ดำเนินการต่อ?`)) return;
+  const r=xsMerge(ex || {channels:{}, name:''}, X);
+  fillForm(r); setEditing(ex ? ex.id : null); updatePullHint();
+  $('formPanel').scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth', block:'start'});
+  const cpas=CH.filter(c=>c.g==='off').some(c=>+r.channels[c.k].spend>0);
+  toast(`${ex?'เปิดรอบ '+xsDates(X.C)+' ที่มีอยู่ แล้วอัปเดตตัวเลขจากไฟล์':'เติมข้อมูลวันที่ '+xsDates(X.C)+' แล้ว'}${X.top?' รวม TOP 5'+(X.top.linked?'':' (ยังไม่มีลิงก์สินค้า วางลิงก์สักครั้ง ครั้งต่อไประบบสร้างให้เอง)'):''}${X.P?'':' (ไม่มีแท็บชำระเงินแล้ว)'}${cpas?'':' · กรอก CPAS เพิ่ม'} แล้วกดบันทึก${X.C.other.length?` · ช่องโฆษณาที่ไม่รู้จักรวมไว้ใน “อื่นๆ”: ${X.C.other.join(', ')}`:''}`);
+}
+async function xsImportMany(files){
+  const ok=[], bad=[];
+  for(const f of files){ try{ ok.push(await xsReadFile(f)); }catch(e){ bad.push(xsErr(e, f.name)); } }
+  if(!ok.length){ toast(bad[0]||'นำเข้าไม่ได้'); return; }
+  ok.sort((a,b)=>a.C.d1.localeCompare(b.C.d1));
+  const upd=ok.filter(x=>xsFindRound(x.C)).length;
+  if(!confirm(`บันทึก ${ok.length} รอบทันทีที่ร้าน “${shopLabel(BRAND)}”\n${ok.map(x=>'• '+xsDates(x.C)+(xsFindRound(x.C)?' (มีอยู่แล้ว · อัปเดตตัวเลข)':' (ใหม่)')).join('\n')}${bad.length?`\n\nข้าม ${bad.length} ไฟล์ที่อ่านไม่ได้`:''}\n\nรอบที่มีอยู่แล้วจะอัปเดตเฉพาะตัวเลขจากไฟล์ ส่วน CPAS หมายเหตุ และ TOP 5 เดิมยังอยู่`)) return;
+  const now=new Date().toISOString(); let n=0;
+  for(const X of ok){
+    const ex=xsFindRound(X.C), r=xsMerge(ex||{channels:{}, name:''}, X);
+    r.id = ex ? ex.id : ('r'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)+(n++));
+    r.shop=curShop; r.createdAt=(ex&&ex.createdAt)||now; r.savedAt=now;
+    const i=records.findIndex(x=>x.id===r.id); if(i>=0) records[i]=r; else records.push(r);
+    selected.add(r.id);
+    for(const x of [...(r.top5||[]),...(r.top5u||[])]) if(x&&(x.url||x.name)) libPut({url:x.url,name:x.name,img:imgOf(x)}, r.savedAt);
+    if(db&&uid){ try{ await coll().doc(r.id).set(r); }catch(e){} }
+  }
+  if(!(db&&uid)){ lsSave(); libSaveLocal(); }
+  if(editingId && ok.some(X=>(xsFindRound(X.C)||{}).id===editingId)){ fillForm({channels:{}}); setEditing(null); }
+  const pts=new Set(ok.map(X=>guessType(X.C.d1,X.C.d2))); if(ptFilter!=='all' && !pts.has(ptFilter)){ ptFilter=pts.size===1?[...pts][0]:'all'; try{ localStorage.setItem('spv62-ptfilter',ptFilter); }catch(e){} }
+  renderShopUI(); renderHistory();
+  toast(`บันทึกแล้ว ${ok.length} รอบ (ใหม่ ${ok.length-upd}, อัปเดต ${upd})${bad.length?` · ข้าม ${bad.length} ไฟล์`:''} · CPAS ไม่มีในไฟล์ เปิดแก้ไขเพื่อกรอกเพิ่ม`);
+}
+$('xlsBtn').addEventListener('click', ()=>$('xlsFile').click());
+$('xlsFile').addEventListener('change', async e=>{
+  const files=[...(e.target.files||[])]; e.target.value=''; if(!files.length) return;
+  const b=$('xlsBtn'), t=b.textContent; b.disabled=true; b.textContent='กำลังอ่านไฟล์…';
+  try{ if(files.length===1) await xsImportOne(files[0]); else await xsImportMany(files); }
+  finally{ b.disabled=false; b.textContent=t; }
+});
+// drop Excel files on the form
+$('formPanel').addEventListener('dragover', e=>{ if([...e.dataTransfer.items||[]].some(it=>it.kind==='file' && /sheet|excel/.test(it.type))) e.preventDefault(); });
+$('formPanel').addEventListener('drop', async e=>{
+  const files=[...(e.dataTransfer.files||[])].filter(f=>/\.xlsx?$/i.test(f.name)); if(!files.length || e.target.closest('.tprow')) return;
+  e.preventDefault(); if(files.length===1) await xsImportOne(files[0]); else await xsImportMany(files);
+});
 
 // ---------- storage ----------
 let records = [];  // {id, ...form, savedAt}
