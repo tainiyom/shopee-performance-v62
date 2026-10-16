@@ -1612,7 +1612,7 @@ function xsFindRound(C){
 // put the numbers from the file into a round; keeps CPAS, notes, TOP 5 and channels that are not in the file
 function xsMerge(base, X){
   const r=normRec(structuredClone(base||{channels:{}})), {C,P}=X;
-  r.d1=C.d1; r.d2=C.d2; if(!base || !PT[base.ptype]) r.ptype=guessType(C.d1,C.d2);
+  r.d1=C.d1; r.d2=C.d2; r.name=xsDates(C); if(!base || !PT[base.ptype]) r.ptype=guessType(C.d1,C.d2);
   r.sales=C.sales; r.traffic={...C.traffic}; r.adsSales=C.adsSales;
   if(P){ r.paid=P.sales; r.trafficPaid={...P.traffic}; r.adsSalesPaid=P.adsSales; }
   for(const k of new Set([...Object.keys(C.ch), ...(P?Object.keys(P.ch):[])])){
@@ -1645,7 +1645,7 @@ function xsShopId(){ for(const u of xsUrls()){ const m=xsDec(u).match(XS_ITEM); 
 function xsLibByItem(id){ for(const p of LIB.values()){ const m=xsDec(p.url).match(XS_ITEM); if(m && (m[2]||m[4])===id) return p; } return null; }
 function xsTopLists(C, P){
   const sid=xsShopId();
-  const info=x=>{ const L=xsLibByItem(x.id); return {url:(L&&L.url)||(sid?`https://shopee.co.th/product/${sid}/${x.id}`:''), name:(L&&L.name)||x.name, img:(L&&L.img)||''}; };
+  const info=x=>{ const L=xsLibByItem(x.id); return {url:(L&&L.url)||(sid?`https://shopee.co.th/product/${sid}/${x.id}`:''), name:x.name||(L&&L.name)||'', img:(L&&L.img)||''}; };
   const top=(f,g)=>[...C.values()].filter(x=>x[f]>0).sort((a,b)=>(b[f]-a[f])||(b[g]-a[g])).slice(0,5);
   const pv=(id,f)=>P ? ((P.get(id)||{})[f]||0) : 0;
   return {
