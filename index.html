@@ -821,10 +821,10 @@ details.ovtable summary{cursor:pointer;font-weight:600;font-size:.9rem}
 
   <div class="panel history">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <div><h2 style="margin:0">ประวัติรอบที่บันทึก</h2><p class="hint" style="margin-top:2px">ดาวน์โหลดเก็บไว้เป็นไฟล์สำรอง แล้วนำเข้ากลับมาได้ทุกเมื่อ</p></div>
+          <div><h2 style="margin:0">ประวัติรอบที่บันทึก</h2><p class="hint" style="margin-top:2px">นำเข้าไฟล์ Excel จาก Seller Centre (เลือกหลายวันพร้อมกันได้) หรือ CSV สำรองข้อมูล · ดาวน์โหลดเก็บไว้เป็นไฟล์สำรองได้ทุกเมื่อ</p></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button type="button" class="btn" id="importBtn">นำเข้าไฟล์ CSV</button>
-            <input type="file" id="importFile" class="vh" tabindex="-1" aria-hidden="true" accept=".csv,text/csv">
+            <button type="button" class="btn" id="importBtn" title="CSV สำรองข้อมูล หรือ Excel shop-stats จาก Seller Centre (เลือกหลายไฟล์ได้)">นำเข้าไฟล์ (CSV / Excel)</button>
+            <input type="file" id="importFile" class="vh" tabindex="-1" aria-hidden="true" multiple accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
             <button class="btn" id="exportCsv" hidden>ดาวน์โหลดไฟล์สำรอง (CSV)</button>
             <button class="btn" id="exportAll" hidden>ดาวน์โหลดทุกร้าน</button>
             <button class="btn" id="shareBtn" hidden>👥 แชร์ให้ทีม</button>
@@ -1879,7 +1879,11 @@ function askImportTarget(incoming, fname){
   });
 }
 $('importFile').addEventListener('change', async e=>{
-  const file=e.target.files&&e.target.files[0]; e.target.value=''; if(!file) return;
+  // Excel shop-stats files from Seller Centre go to the Excel import; CSV backups keep the old flow
+  const picked=[...(e.target.files||[])], xls=picked.filter(f=>/\.xlsx?$/i.test(f.name));
+  if(xls.length){ e.target.value=''; if(xls.length<picked.length) toast('เลือก CSV กับ Excel ปนกัน · นำเข้าเฉพาะไฟล์ Excel ก่อน');
+    if(xls.length===1) await xsImportOne(xls[0]); else await xsImportMany(xls); return; }
+  const file=picked[0]; e.target.value=''; if(!file) return;
   let rows; try{ rows=parseCSV(await file.text()); }catch(err){ toast('อ่านไฟล์ไม่ได้ ใช้ไฟล์ CSV ที่ดาวน์โหลดจากหน้านี้'); return; }
   if(rows.length<2){ toast('ไฟล์นี้ไม่มีข้อมูลรอบ'); return; }
   const head=rows[0].map(h=>String(h).trim()); const col=n=>head.indexOf(n);
